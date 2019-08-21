@@ -331,7 +331,7 @@ spec:
     it("returns yaml with version", async () => {
       const yaml = await client.getInstallerYAML("latest", true);
 
-      expect(yaml).to.match(/version: "latest"/);
+      expect(yaml).to.match(new RegExp(`version: "\\d+.\\d+.\\d+"`));
     });
   });
 
