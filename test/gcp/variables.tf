@@ -10,5 +10,5 @@ variable "project" {
 
 variable "id" {
 	description = "Added to instance names"
-	default= "aka"
+	default= "kurl"
 }

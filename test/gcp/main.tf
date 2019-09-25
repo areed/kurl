@@ -1,11 +1,12 @@
 provider "google" {
   project = "${var.project}"
   region  = "${var.region}"
+	version = "~> 2.16"
   # credentials comes from env var GOOGLE_CREDENTIALS
 }
 
-resource "google_compute_instance" "aka_bastion" {
-  name         = "aka-test-${var.id}-bastion"
+resource "google_compute_instance" "kurl_bastion" {
+  name         = "kurl-test-${var.id}-bastion"
   machine_type = "n1-standard-1"
   zone         = "us-central1-f"
 
@@ -24,19 +25,19 @@ resource "google_compute_instance" "aka_bastion" {
   }
 
   metadata = {
-    ssh-keys = "aka:${file("/.ssh/id_rsa.pub")}"
+    ssh-keys = "kurl:${file("/.ssh/id_rsa.pub")}"
   }
 
 	connection {
 		type        = "ssh"
-		host = "${google_compute_instance.aka_bastion.network_interface.0.access_config.0.nat_ip}"
-		user        = "aka"
+		host = "${google_compute_instance.kurl_bastion.network_interface.0.access_config.0.nat_ip}"
+		user        = "kurl"
 		private_key = "${file("/.ssh/id_rsa")}"
 	}
 }
 
-resource "google_compute_instance" "aka_test" {
-  name         = "aka-test-${var.id}"
+resource "google_compute_instance" "kurl_test" {
+  name         = "kurl-test-${var.id}"
   machine_type = "n1-standard-2"
   zone         = "us-central1-f"
 
@@ -52,26 +53,22 @@ resource "google_compute_instance" "aka_test" {
   }
 
   metadata = {
-    ssh-keys = "aka:${file("/.ssh/id_rsa.pub")}"
+    ssh-keys = "kurl:${file("/.ssh/id_rsa.pub")}"
   }
 
 	connection {
 		type        = "ssh"
-		host = "${google_compute_instance.aka_test.network_interface.0.network_ip}"
-		user        = "aka"
+		host = "${google_compute_instance.kurl_test.network_interface.0.network_ip}"
+		user        = "kurl"
 		private_key = "${file("/.ssh/id_rsa")}"
-		bastion_host = "${google_compute_instance.aka_bastion.network_interface.0.access_config.0.nat_ip}"
-	}
-
-  provisioner "file" {
-		source = "/dist/aka-ubuntu-1804.tar.gz"
-		destination = "/home/aka/aka-ubuntu-1804.tar.gz"
+		bastion_host = "${google_compute_instance.kurl_bastion.network_interface.0.access_config.0.nat_ip}"
 	}
 
   provisioner "remote-exec" {
     inline = [
-			"tar xvf aka-ubuntu-1804.tar.gz",
-			"cd scripts && cat install.sh | sudo bash -s airgap",
+			"curl -LO https://staging.kurl.sh/bundle/latest.tar.gz",
+			"tar xvf latest.tar.gz",
+			"sudo bash install.sh airgap",
 		]
   }
 }

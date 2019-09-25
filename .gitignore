@@ -3,3 +3,6 @@ build/
 dist/
 tmp/
 web/templates
+.terraform
+terraform.tfstate
+terraform.tfstate.backup
