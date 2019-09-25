@@ -9,6 +9,6 @@ variable "project" {
 }
 
 variable "id" {
-	description = "Added to instance names"
-	default= "kurl"
+  description = "Added to instance names"
+  default     = "kurl"
 }
