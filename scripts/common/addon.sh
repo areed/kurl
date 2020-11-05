@@ -1,5 +1,27 @@
 
-function addon() {
+function addon_for_each() {
+    local cmd="$1"
+
+    $cmd aws "$AWS_VERSION"
+    $cmd nodeless "$NODELESS_VERSION"
+    $cmd calico "$CALICO_VERSION"
+    $cmd weave "$WEAVE_VERSION"
+    $cmd rook "$ROOK_VERSION"
+    $cmd openebs "$OPENEBS_VERSION"
+    $cmd minio "$MINIO_VERSION"
+    $cmd contour "$CONTOUR_VERSION"
+    $cmd registry "$REGISTRY_VERSION"
+    $cmd prometheus "$PROMETHEUS_VERSION"
+    $cmd kotsadm "$KOTSADM_VERSION"
+    $cmd velero "$VELERO_VERSION"
+    $cmd fluentd "$FLUENTD_VERSION"
+    $cmd ekco "$EKCO_VERSION"
+    $cmd collectd "$COLLECTD_VERSION"
+    $cmd cert-manager "$CERT_MANAGER_VERSION"
+    $cmd metrics-server "$METRICS_SERVER_VERSION"
+}
+
+function addon_install() {
     local name=$1
     local version=$2
 
@@ -12,22 +34,53 @@ function addon() {
     rm -rf $DIR/kustomize/$name
     mkdir -p $DIR/kustomize/$name
 
-    addon_load "$name" "$version"
-
     . $DIR/addons/$name/$version/install.sh
 
     $name
+}
+
+function addon_pre_init() {
+    local name=$1
+    local version=$2
+
+    if [ -z "$version" ]; then
+        return 0
+    fi
+
+    if [ "$AIRGAP" != "1" ] && [ -n "$DIST_URL" ]; then
+        echo "Fetching $name-$version.tar.gz"
+        curl -sSLO "$DIST_URL/$name-$version.tar.gz"
+        tar xf $name-$version.tar.gz
+        rm $name-$version.tar.gz
+    fi
+
+    . $DIR/addons/$name/$version/install.sh
+
+    if commandExists ${name}_pre_init; then
+        ${name}_pre_init
+    fi
 }
 
 function addon_join() {
     local name=$1
     local version=$2
 
+    if [ -z "$version" ]; then
+        return 0
+    fi
+
+    if [ "$AIRGAP" != "1" ] && [ -n "$DIST_URL" ]; then
+        curl -sSLO "$DIST_URL/$name-$version.tar.gz"
+        tar xf $name-$version.tar.gz
+        rm $name-$version.tar.gz
+    fi
+
     addon_load "$name" "$version"
 
     . $DIR/addons/$name/$version/install.sh
 
     if commandExists ${name}_join; then
+        logStep "Addon $name $version"
         ${name}_join
     fi
 }
@@ -38,12 +91,6 @@ function addon_load() {
 
     if [ -z "$version" ]; then
         return 0
-    fi
-
-    if [ "$AIRGAP" != "1" ] && [ -n "$KURL_URL" ]; then
-        curl -sSLO "$KURL_URL/dist/$name-$version.tar.gz"
-        tar xf $name-$version.tar.gz
-        rm $name-$version.tar.gz
     fi
 
     load_images $DIR/addons/$name/$version/images

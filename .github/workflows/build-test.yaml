@@ -1,0 +1,33 @@
+name: build-test
+
+on:
+  pull_request:
+    branches:
+      - master
+  push:
+    branches:
+      - "**"
+
+jobs:
+  build-kurl-utils:
+    runs-on: ubuntu-18.04
+    steps:
+      - uses: actions/setup-go@v1
+        with:
+          go-version: "1.14.2"
+
+      - name: setup env
+        run: |
+          echo "::set-env name=GOPATH::$(go env GOPATH)"
+          echo "::add-path::$(go env GOPATH)/bin"
+        shell: bash
+
+      - uses: actions/checkout@v2
+
+      - run: go get golang.org/x/lint/golint
+      - run: make -C kurl_util test build
+
+      - uses: actions/setup-node@v1
+        with:
+          node-version: '12'
+      - run: make -C web test

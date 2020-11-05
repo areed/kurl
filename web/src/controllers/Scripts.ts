@@ -34,6 +34,7 @@ export class Installers {
    * @returns string
    */
   @Get("/:installerID")
+  @Get("/:installerID/install.sh")
   @instrumented
   public async getInstaller(
     @Res() response: Express.Response,
@@ -55,7 +56,7 @@ export class Installers {
   public async root(
     @Res() response: Express.Response,
   ): Promise<string> {
-    const installer = Installer.latest();
+    const installer = Installer.latest().resolve();
 
     response.status(200);
     return this.templates.renderInstallScript(installer);
@@ -105,5 +106,22 @@ export class Installers {
 
     response.status(200);
     return this.templates.renderUpgradeScript(installer);
+  }
+
+  @Get("/:installerID/tasks.sh")
+  @instrumented
+  public async getTasks(
+    @Res() response: Express.Response,
+    @PathParams("installerID") installerID: string,
+  ): Promise<string | ErrorResponse> {
+    let installer = await this.installerStore.getInstaller(installerID);
+    if (!installer) {
+      response.status(404);
+      return notFoundResponse;
+    }
+    installer = installer.resolve();
+
+    response.status(200);
+    return this.templates.renderTasksScript();
   }
 }

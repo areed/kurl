@@ -6,7 +6,9 @@ function preflights() {
     checkDockerK8sVersion
     checkFirewalld
     must_disable_selinux
-    require_docker
+    apply_iptables_config
+    cri_preflights
+    kotsadm_prerelease
 
     return 0
 }
@@ -30,7 +32,7 @@ function require64Bit() {
 
 function bailIfUnsupportedOS() {
     case "$LSB_DIST$DIST_VERSION" in
-        ubuntu16.04|ubuntu18.04|rhel7.4|rhel7.5|rhel7.6|centos7.4|centos7.5|centos7.6)
+        ubuntu16.04|ubuntu18.04|ubuntu20.04|rhel7.4|rhel7.5|rhel7.6|rhel7.7|rhel7.8|rhel7.9|rhel8.0|rhel8.1|rhel8.2|centos7.4|centos7.5|centos7.6|centos7.7|centos7.8|centos8.0|centos8.1|centos8.2|amzn2)
             ;;
         *)
             bail "Kubernetes install is not supported on ${LSB_DIST} ${DIST_VERSION}"
@@ -76,6 +78,12 @@ checkDockerK8sVersion()
 }
 
 checkFirewalld() {
+    if [ -n "$PRESERVE_DOCKER_CONFIG" ]; then
+        return
+    fi
+
+    apply_firewalld_config
+
     if [ "$BYPASS_FIREWALLD_WARNING" = "1" ]; then
         return
     fi
@@ -86,6 +94,19 @@ checkFirewalld() {
     if [ "$HARD_FAIL_ON_FIREWALLD" = "1" ]; then
         printf "${RED}Firewalld is active${NC}\n" 1>&2
         exit 1
+    fi
+
+    if [ -n "$DISABLE_FIREWALLD" ]; then
+        systemctl stop firewalld
+        systemctl disable firewalld
+        return
+    fi
+   
+    printf "${YELLOW}Firewalld is active, please press Y to disable ${NC}"
+    if confirmY ; then
+        systemctl stop firewalld
+        systemctl disable firewalld
+        return
     fi
 
     printf "${YELLOW}Continue with firewalld active? ${NC}"
@@ -102,7 +123,24 @@ must_disable_selinux() {
     #    Disabling SELinux by running setenforce 0 is required to allow containers to
     #    access the host filesystem, which is required by pod networks for example.
     #    You have to do this until SELinux support is improved in the kubelet.
+
+    # Check and apply YAML overrides
+    if [ -n "$PRESERVE_SELINUX_CONFIG" ]; then
+        return
+    fi
+
+    apply_selinux_config
+    if [ -n "$BYPASS_SELINUX_PREFLIGHT" ]; then
+        return
+    fi
+
     if selinux_enabled && selinux_enforced ; then
+        if [ -n "$DISABLE_SELINUX" ]; then
+            setenforce 0
+            sed -i s/^SELINUX=.*$/SELINUX=permissive/ /etc/selinux/config
+            return
+        fi
+       
         printf "\n${YELLOW}Kubernetes is incompatible with SELinux. Disable SELinux to continue?${NC} "
         if confirmY ; then
             setenforce 0
@@ -121,23 +159,43 @@ swapConfigured() {
 	    cat /etc/fstab | grep --quiet --ignore-case --extended-regexp '^[^#]+swap'
 }
 
-function require_docker() {
+function force_docker() {
+    DOCKER_VERSION="19.03.4"
+    echo "NO CRI version was listed in yaml or found on host OS, defaulting to online docker install"
+    echo "THIS FEATURE IS NOT SUPPORTED AND WILL BE DEPRECATED IN FUTURE KURL VERSIONS"
+}
+
+function cri_preflights() {
+    require_cri
+}
+
+function require_cri() {
 	if commandExists docker ; then
+        SKIP_DOCKER_INSTALL=1
 		return 0
 	fi
 
-  if [ "$LSB_DIST" = "rhel" ]; then
-      if [ -n "$NO_CE_ON_EE" ]; then
-	  printf "${RED}Enterprise Linux distributions require Docker Enterprise Edition. Please install Docker before running this installation script.${NC}\n" 1>&2
-	  return 0
-      fi
-  fi
-
-  if [ "$SKIP_DOCKER_INSTALL" = "0" ]; then
-	  bail "Docker is required"
+    if commandExists ctr ; then
+        SKIP_CONTAINERD_INSTALL=1
+		return 0
 	fi
 
-  return 0
+    if [ "$LSB_DIST" = "rhel" ]; then
+        if [ -n "$NO_CE_ON_EE" ]; then
+            printf "${RED}Enterprise Linux distributions require Docker Enterprise Edition. Please install Docker before running this installation script.${NC}\n" 1>&2
+            return 0
+        fi
+    fi
+
+    if [ "$SKIP_DOCKER_INSTALL" = "1" ]; then
+        bail "Docker is required"
+    fi
+
+    if [ -z "$DOCKER_VERSION" ] && [ -z "$CONTAINERD_VERSION" ]; then
+            force_docker
+    fi
+
+    return 0
 }
 
 selinux_enabled() {
@@ -165,4 +223,13 @@ selinux_enforced() {
     fi
 
     return 1
+}
+
+function kotsadm_prerelease() {
+    if [ "$KOTSADM_VERSION" = "alpha" ]; then
+        printf "\n${YELLOW}This is a prerelease version of kotsadm and should not be run in production. Press Y to continue.${NC} "
+        if ! confirmN; then
+            bail "\nWill not install prerelease version of kotsadm."
+        fi
+    fi
 }

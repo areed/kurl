@@ -1,4 +1,8 @@
 
+function weave_pre_init() {
+    weave_use_existing_network
+}
+
 function weave() {
     cp "$DIR/addons/weave/2.5.2/kustomization.yaml" "$DIR/kustomize/weave/kustomization.yaml"
     cp "$DIR/addons/weave/2.5.2/rbac.yaml" "$DIR/kustomize/weave/rbac.yaml"
@@ -13,11 +17,12 @@ function weave() {
         weave_warn_if_sleeve
     fi
 
-    if [ -n "$IPALLOC_RANGE" ]; then
+    if [ -n "$POD_CIDR" ]; then
         weave_patch_ip_alloc_range
     fi
 
     kubectl apply -k "$DIR/kustomize/weave/"
+    weave_ready_spinner
 }
 
 function weave_resource_secret() {
@@ -42,5 +47,27 @@ function weave_warn_if_sleeve() {
     local kernel_minor=$(uname -r | cut -d'.' -f2)
     if [ "$kernel_major" -lt "4" ] || ([ "$kernel_major" -lt "5" ] && [ "$kernel_minor" -lt "3" ]); then
         printf "${YELLOW}This host will not be able to establish optimized network connections with other peers in the Kubernetes cluster.\nRefer to the Replicated networking guide for help.\n\nhttp://help.replicated.com/docs/kubernetes/customer-installations/networking/${NC}\n"
+    fi
+}
+
+function weave_use_existing_network() {
+    if weaveDev=$(ip route show dev weave 2>/dev/null); then
+        EXISTING_POD_CIDR=$(echo $weaveDev | awk '{ print $1 }')
+        echo "Using existing weave network: $EXISTING_POD_CIDR"
+    fi
+}
+
+function weave_health_check() {
+    local health="$(kubectl get pods -n kube-system -l name=weave-net -o jsonpath="{range .items[*]}{range .status.conditions[*]}{ .type }={ .status }{'\n'}{end}{end}" 2>/dev/null)"
+    if [ -z "$health" ] || echo "$health" | grep -q '^Ready=False' ; then
+        return 1
+    fi
+    return 0
+}
+
+function weave_ready_spinner() {
+    if ! spinner_until 120 weave_health_check; then
+      kubectl logs -n kube-system -l name=weave-net --all-containers --tail 10
+      bail "The weave addon failed to deploy successfully."
     fi
 }

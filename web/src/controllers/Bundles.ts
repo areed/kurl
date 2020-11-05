@@ -1,8 +1,7 @@
 import * as path from "path";
 import * as Express from "express";
-import * as tar from "tar-stream";
 import * as request from "request-promise";
-import * as gunzip from "gunzip-maybe";
+import * as _ from "lodash";
 import {
   Controller,
   Get,
@@ -10,6 +9,7 @@ import {
   Res } from "ts-express-decorators";
 import { Templates } from "../util/services/templates";
 import { InstallerStore } from "../installers";
+import { logger } from "../logger";
 
 interface ErrorResponse {
   error: any;
@@ -21,15 +21,32 @@ const notFoundResponse = {
   },
 };
 
+interface FilepathContentsMap {
+  [filepath: string]: string;
+}
+
+// Manifest for building an airgap bundle.
+interface BundleManifest {
+  layers: Array<string>;
+  files: FilepathContentsMap;
+};
+
 @Controller("/bundle")
 export class Bundle {
-  private distOrigin: string;
+  private distURL: string;
+  private replicatedAppURL: string;
 
   constructor(
     private readonly templates: Templates,
     private readonly installers: InstallerStore,
   ) {
-    this.distOrigin = `https://${process.env["KURL_BUCKET"]}.s3.amazonaws.com`;
+    this.replicatedAppURL = process.env["REPLICATED_APP_URL"] || "https://replicated.app";
+    this.distURL = `https://${process.env["KURL_BUCKET"]}.s3.amazonaws.com`;
+    if (process.env["NODE_ENV"] === "production") {
+      this.distURL += "/dist";
+    } else {
+      this.distURL += "/staging";
+    }
   }
 
   /**
@@ -38,13 +55,12 @@ export class Bundle {
    * @param response
    * @returns {{id: any, name: string}}
    */
-  @Get("/:pkg")
+  @Get("/:installerID")
   public async redirect(
     @Res() response: Express.Response,
-    @PathParams("pkg") pkg: string,
-  ): Promise<void|ErrorResponse> {
+    @PathParams("installerID") installerID: string,
+  ): Promise<BundleManifest|ErrorResponse> {
 
-    const installerID = path.basename(pkg, ".tar.gz");
     let installer = await this.installers.getInstaller(installerID);
 
     if (!installer) {
@@ -53,47 +69,30 @@ export class Bundle {
     }
     installer = installer.resolve();
 
-    const pack = tar.pack();
+    response.type("application/json");
 
-    response.type("binary/octet-stream");
+    const ret: BundleManifest = {layers: [], files: {}};
+    ret.layers = installer.packages().map((pkg) => `${this.distURL}/${pkg}.tar.gz`);
 
-    pack.pipe(response);
-
-    const packages = installer.packages().map((pkg) => `${this.distOrigin}/dist/${pkg}.tar.gz`);
-
-    for (let i = 0; i < packages.length; i++) {
-      await copy(packages[i], pack);
+    const kotsadmApplicationSlug = _.get(installer.spec, "kotsadm.applicationSlug");
+    if (kotsadmApplicationSlug) {
+      try {
+          logger.debug("URL:" + this.replicatedAppURL + ", SLUG:" + kotsadmApplicationSlug);
+          const appMetadata = await request(`${this.replicatedAppURL}/metadata/${kotsadmApplicationSlug}`);
+          const key = `addons/kotsadm/${_.get(installer.spec, "kotsadm.version")}/application.yaml`;
+          ret.files[key] = appMetadata;
+      } catch(err) {
+          // Log the error but continue bundle execution
+          // (branding metadata is optional even though user specified a app slug)
+          logger.debug("Failed to fetch metadata (non-fatal error): " + err);
+      }
     }
 
-    if (installer.kotsadmApplicationSlug()) {
-      const metadata = await request(`https://replicated.app/metadata/${installer.kotsadmApplicationSlug()}`)
-      pack.entry({ name: `addons/kotsadm/${installer.kotsadmVersion()}/application.yaml` }, metadata)
-    }
-    pack.entry({ name: "join.sh" }, this.templates.renderJoinScript(installer));
-    pack.entry({ name: "upgrade.sh" }, this.templates.renderUpgradeScript(installer));
-    // send last to protect against interrupted downloads
-    pack.entry({ name: "install.sh" }, this.templates.renderInstallScript(installer));
+    ret.files["install.sh"] = this.templates.renderInstallScript(installer);
+    ret.files["join.sh"] = this.templates.renderJoinScript(installer);
+    ret.files["upgrade.sh"] = this.templates.renderUpgradeScript(installer);
+    ret.files["tasks.sh"] = this.templates.renderTasksScript();
 
-    pack.finalize();
-
-    await new Promise((resolve, reject) => {
-      pack.on("end", resolve);
-      pack.on("error", reject);
-    });
+    return ret;
   }
 }
-
-const copy = async(url: string, dst: any) => {
-  return new Promise((resolve, reject) => {
-    const extract = tar.extract();
-
-    request(url).pipe(gunzip()).pipe(extract);
-
-    extract.on("entry", (header, stream, done) => {
-      stream.pipe(dst.entry(header, done));
-    });
-
-    extract.on("finish", resolve);
-    extract.on("error", reject);
-  });
-};

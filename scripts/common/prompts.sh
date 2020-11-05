@@ -7,38 +7,10 @@ function prompts() {
     fi
     # TODO public address? only required for adding SAN to K8s API server cert
 
-    if [ "$NO_PROXY" != "1" ]; then
-        if [ -z "$PROXY_ADDRESS" ]; then
-            discoverProxy
-        fi
-
-        if [ -z "$PROXY_ADDRESS" ] && [ "$AIRGAP" != "1" ]; then
-            promptForProxy
-        fi
-
-        if [ -n "$PROXY_ADDRESS" ]; then
-            getNoProxyAddresses "$PRIVATE_ADDRESS" "$SERVICE_CIDR"
-        fi
-    fi
-
     prompt_airgap_preload_images
-}
 
-promptForProxy() {
-    printf "Does this machine require a proxy to access the Internet? "
-    if ! confirmN; then
-        return
-    fi
-
-    printf "Enter desired HTTP proxy address: "
-    prompt
-    if [ -n "$PROMPT_RESULT" ]; then
-        if [ "${PROMPT_RESULT:0:7}" != "http://" ] && [ "${PROMPT_RESULT:0:8}" != "https://" ]; then
-            echo >&2 "Proxy address must have prefix \"http(s)://\""
-            exit 1
-        fi
-        PROXY_ADDRESS="$PROMPT_RESULT"
-        printf "The installer will use the proxy at '%s'\n" "$PROXY_ADDRESS"
+    if [ "$HA_CLUSTER" = "1" ]; then
+        promptForLoadBalancerAddress
     fi
 }
 
@@ -216,20 +188,28 @@ function prompt_airgap_preload_images() {
     if ! kubernetes_has_remotes; then
         return 0
     fi
-
-    printf "\n"
-    printf "\n"
-    printf "Run this script on all remote airgapped nodes to load required images before proceeding:\n"
-    printf "\n"
-    printf "${GREEN}\tcat ./install.sh | sudo bash -s task=load-images${NC}"
-    printf "\n"
-    while true; do
-        echo ""
-        printf "Have images been loaded on all remote nodes? "
-        if confirmY " "; then
-            break
+ 
+    while read -r node; do
+        local nodeName=$(echo "$node" | awk '{ print $1 }')
+        if [ "$nodeName" = "$(hostname)" ]; then
+            continue
         fi
-    done
+        if kubernetes_node_has_all_images "$nodeName"; then
+            continue
+        fi
+        printf "\nRun this script on node ${GREEN}${nodeName}${NC} to load required images before proceeding:\n"
+        printf "\n"
+        printf "${GREEN}\tcat ./tasks.sh | sudo bash -s load-images${NC}"
+        printf "\n"
+
+        while true; do
+            echo ""
+            printf "Have images been loaded on node ${nodeName}? "
+            if confirmY " "; then
+                break
+            fi
+        done
+    done < <(kubectl get nodes --no-headers)
 }
 
 promptForPublicIp() {
@@ -253,20 +233,12 @@ promptForPublicIp() {
     done
 }
 
-isValidIpv4() {
-    if echo "$1" | grep -qs '^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$'; then
-        return 0
-    else
-        return 1
-    fi
-}
-
 promptForPrivateIp() {
     _count=0
     _regex="^[[:digit:]]+: ([^[:space:]]+)[[:space:]]+[[:alnum:]]+ ([[:digit:].]+)"
     while read -r _line; do
         [[ $_line =~ $_regex ]]
-        if [ "${BASH_REMATCH[1]}" != "lo" ]; then
+        if [ "${BASH_REMATCH[1]}" != "lo" ] && [ "${BASH_REMATCH[1]}" != "kube-ipvs0" ] && [ "${BASH_REMATCH[1]}" != "docker0" ] && [ "${BASH_REMATCH[1]}" != "weave" ]; then
             _iface_names[$((_count))]=${BASH_REMATCH[1]}
             _iface_addrs[$((_count))]=${BASH_REMATCH[2]}
             let "_count += 1"

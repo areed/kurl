@@ -3,7 +3,103 @@ import {expect} from "chai";
 import { Installer } from "../installers";
 import * as _ from "lodash";
 
-const typeMetaStable = `
+const everyOption = `apiVersion: kurl.sh/v1beta1
+metadata:
+  name: everyOption
+spec:
+  kubernetes:
+    version: latest
+    serviceCidrRange: /12
+    serviceCIDR: 100.1.1.1/12
+    HACluster: false
+    masterAddress: 192.168.1.1
+    loadBalancerAddress: 10.128.10.1
+    bootstrapToken: token
+    bootstrapTokenTTL: 10min
+    kubeadmTokenCAHash: hash
+    controlPlane: false
+    certKey: key
+  docker:
+    version: latest
+    bypassStorageDriverWarnings: false
+    hardFailOnLoopback: false
+    noCEOnEE: false
+    dockerRegistryIP: 192.168.0.1
+    additionalNoProxy: 129.168.0.2
+    noDocker: false
+  weave:
+    version: latest
+    encryptNetwork: true
+    podCidrRange: /12
+    podCIDR: 39.1.2.3
+  contour:
+    version: latest
+    tlsMinimumProtocolVersion: "1.3"
+  rook:
+    version: latest
+    storageClassName: default
+    cephReplicaCount: 1
+    isBlockStorageEnabled: true
+    blockDeviceFilter: sd[a-z]
+  openebs:
+    version: latest
+    namespace: openebs
+    isLocalPVEnabled: true
+    localPVStorageClassName: default
+    isCstorEnabled: true
+    cstorStorageClassName: cstor
+  minio:
+    version: latest
+    namespace: minio
+  registry:
+    version: latest
+    publishPort: 20
+  prometheus:
+    version: latest
+  fluentd:
+    version: latest
+    fullEFKStack: false
+  kotsadm:
+    version: latest
+    applicationSlug: sentry
+    uiBindPort: 8800
+    applicationNamespace: kots
+    hostname: 1.1.1.1
+  velero:
+    version: latest
+    namespace: velero
+    disableCLI: false
+    disableRestic: false
+    localBucket: local
+  ekco:
+    version: latest
+    nodeUnreachableToleration: 10m
+    minReadyMasterNodeCount: 3
+    minReadyWorkerNodeCount: 1
+    shouldDisableRebootService: false
+    shouldDisableClearNodes: false
+    shouldEnablePurgeNodes: false
+    rookShouldUseAllNodes: false
+  kurl:
+    proxyAddress: 1.1.1.1
+    additionalNoProxyAddresses:
+    - 10.128.0.3
+    airgap: false
+    bypassFirewalldWarning: false
+    hardFailOnFirewalld: false
+    hostnameCheck: 2.2.2.2
+    noProxy: false
+    privateAddress: 10.38.1.1
+    publicAddress: 101.38.1.1
+  collectd:
+    version: 0.0.1
+  certManager:
+    version: 1.0.3
+  metricsServer:
+    version: 0.3.7
+`;
+
+const typeMetaStableV1Beta1 = `
 apiVersion: kurl.sh/v1beta1
 kind: Installer
 metadata:
@@ -19,6 +115,8 @@ spec:
     version: 0.14.0
   registry:
     version: 2.7.1
+  prometheus:
+    version: 0.33.0
 `;
 
 const stable = `
@@ -35,6 +133,8 @@ spec:
     version: 0.14.0
   registry:
     version: 2.7.1
+  prometheus:
+    version: 0.33.0
 `;
 
 const noName = `
@@ -49,6 +149,8 @@ spec:
     version: 0.14.0
   registry:
     version: 2.7.1
+  prometheus:
+    version: 0.33.0
 `;
 
 const disordered = `
@@ -57,6 +159,8 @@ spec:
     version: 0.14.0
   weave:
     version: 2.5.2
+  prometheus:
+    version: 0.33.0
   kubernetes:
     version: 1.15.2
   registry:
@@ -77,6 +181,8 @@ spec:
     version: 0.14.0
   registry:
     version: 2.7.1
+  prometheus:
+    version: 0.33.0
 `;
 
 const min = `
@@ -92,7 +198,7 @@ spec:
   kubernetes:
     version: latest
   kotsadm:
-    version: 0.9.8
+    version: 0.9.9
     applicationSlug: sentry-enterprise
 `;
 
@@ -101,7 +207,7 @@ spec:
   kubernetes:
     version: latest
   kotsadm:
-    version: 0.9.8
+    version: 0.9.9
 `;
 
 const kotsNoVersion = `
@@ -112,62 +218,142 @@ spec:
     applicationSlug: sentry-enterprise
 `;
 
+const velero = `
+spec:
+  velero:
+    version: latest
+    namespace: not-velero
+    installCLI: false
+    useRestic: false
+`;
+
+const veleroMin = `
+spec:
+  velero:
+    version: latest
+`;
+
+const veleroDefaults = `
+spec:
+  velero:
+    version: latest
+    namespace: velero
+`;
+
+const fluentd = `
+spec:
+  fluentd:
+    version: latest
+    fullEFKStack: true
+`;
+
+const fluentdMin = `
+spec:
+  fluentd:
+    version: latest
+`;
+
+const ekco = `
+spec:
+  ekco:
+    version: latest
+    nodeUnreachableToleration: 10m
+    minReadyMasterNodeCount: 3
+    minReadyWorkerNodeCount: 1
+    shouldDisableRebootService: false
+    shouldDisableClearNodes: false
+    shouldEnablePurgeNodes: false
+    rookShouldUseAllNodes: false
+`;
+
+const ekcoMin = `
+spec:
+  ekco:
+    version: latest
+`;
+
+const contour = `
+spec:
+  contour:
+    version: latest
+    tlsMinimumProtocolVersion: "1.3"
+`;
+
+const openebs = `
+spec:
+  openebs:
+    version: latest
+    isLocalPVEnabled: true
+    localPVStorageClassName: default
+    isCstorEnabled: true
+    cstorStorageClassName: cstor
+`;
+
 describe("Installer", () => {
   describe("parse", () => {
     it("parses yaml with type meta and name", () => {
-      const i = Installer.parse(typeMetaStable);
+      const i = Installer.parse(typeMetaStableV1Beta1);
       expect(i).to.have.property("id", "stable");
-      expect(i.kubernetes).to.have.property("version", "1.15.2");
-      expect(i.weave).to.have.property("version", "2.5.2");
-      expect(i.rook).to.have.property("version", "1.0.4");
-      expect(i.contour).to.have.property("version", "0.14.0");
-      expect(i.registry).to.have.property("version", "2.7.1");
+      expect(i.spec.kubernetes).to.have.property("version", "1.15.2");
+      expect(i.spec.weave).to.have.property("version", "2.5.2");
+      expect(i.spec.rook).to.have.property("version", "1.0.4");
+      expect(i.spec.contour).to.have.property("version", "0.14.0");
+      expect(i.spec.registry).to.have.property("version", "2.7.1");
+      expect(i.spec.prometheus).to.have.property("version", "0.33.0");
     });
 
     it("parses yaml with name and no type meta", () => {
       const i = Installer.parse(stable);
       expect(i).to.have.property("id", "stable");
-      expect(i.kubernetes).to.have.property("version", "1.15.2");
-      expect(i.weave).to.have.property("version", "2.5.2");
-      expect(i.rook).to.have.property("version", "1.0.4");
-      expect(i.contour).to.have.property("version", "0.14.0");
-      expect(i.registry).to.have.property("version", "2.7.1");
+      expect(i.spec.kubernetes).to.have.property("version", "1.15.2");
+      expect(i.spec.weave).to.have.property("version", "2.5.2");
+      expect(i.spec.rook).to.have.property("version", "1.0.4");
+      expect(i.spec.contour).to.have.property("version", "0.14.0");
+      expect(i.spec.registry).to.have.property("version", "2.7.1");
+      expect(i.spec.prometheus).to.have.property("version", "0.33.0");
     });
 
     it("parses yaml with only a spec", () => {
       const i = Installer.parse(noName);
       expect(i).to.have.property("id", "");
-      expect(i.kubernetes).to.have.property("version", "1.15.2");
-      expect(i.weave).to.have.property("version", "2.5.2");
-      expect(i.rook).to.have.property("version", "1.0.4");
-      expect(i.contour).to.have.property("version", "0.14.0");
-      expect(i.registry).to.have.property("version", "2.7.1");
+      expect(i.spec.kubernetes).to.have.property("version", "1.15.2");
+      expect(i.spec.weave).to.have.property("version", "2.5.2");
+      expect(i.spec.rook).to.have.property("version", "1.0.4");
+      expect(i.spec.contour).to.have.property("version", "0.14.0");
+      expect(i.spec.registry).to.have.property("version", "2.7.1");
+      expect(i.spec.prometheus).to.have.property("version", "0.33.0");
     });
 
     it("parses yaml spec in different order", () => {
       const i = Installer.parse(disordered);
       expect(i).to.have.property("id", "");
-      expect(i.kubernetes).to.have.property("version", "1.15.2");
-      expect(i.weave).to.have.property("version", "2.5.2");
-      expect(i.rook).to.have.property("version", "1.0.4");
-      expect(i.contour).to.have.property("version", "0.14.0");
-      expect(i.registry).to.have.property("version", "2.7.1");
+      expect(i.spec.kubernetes).to.have.property("version", "1.15.2");
+      expect(i.spec.weave).to.have.property("version", "2.5.2");
+      expect(i.spec.rook).to.have.property("version", "1.0.4");
+      expect(i.spec.contour).to.have.property("version", "0.14.0");
+      expect(i.spec.registry).to.have.property("version", "2.7.1");
+      expect(i.spec.prometheus).to.have.property("version", "0.33.0");
     });
 
     it("parses yaml spec with empty versions", () => {
       const i = Installer.parse(min);
       expect(i).to.have.property("id", "");
-      expect(i.kubernetes).to.have.property("version", "1.15.1");
-      expect(i.weave).to.have.property("version", "");
-      expect(i.rook).to.have.property("version", "");
-      expect(i.contour).to.have.property("version", "");
-      expect(i.registry).to.have.property("version", "");
+      expect(i.spec.kubernetes).to.have.property("version", "1.15.1");
+      expect(i.spec).not.to.have.property("weave");
+      expect(i.spec).not.to.have.property("rook");
+      expect(i.spec).not.to.have.property("contour");
+      expect(i.spec).not.to.have.property("registry");
+      expect(i.spec).not.to.have.property("kotsadm");
+      expect(i.spec).not.to.have.property("docker");
+      expect(i.spec).not.to.have.property("prometheus");
+      expect(i.spec).not.to.have.property("velero");
+      expect(i.spec).not.to.have.property("fluentd");
     });
   });
 
   describe("hash", () => {
     it("hashes same specs to the same string", () => {
-      const a = Installer.parse(typeMetaStable).hash();
+      const a = Installer.parse(typeMetaStableV1Beta1).hash();
       const b = Installer.parse(stable).hash();
       const c = Installer.parse(noName).hash();
       const d = Installer.parse(disordered).hash();
@@ -178,90 +364,64 @@ describe("Installer", () => {
     });
 
     it("hashes different specs to different strings", () => {
-      const a = Installer.parse(typeMetaStable).hash();
+      const a = Installer.parse(typeMetaStableV1Beta1).hash();
       const b = Installer.parse(k8s14).hash();
 
       expect(a).not.to.equal(b);
     });
 
     it("hashes to a 7 character hex string", () => {
-      const a = Installer.parse(typeMetaStable).hash();
+      const a = Installer.parse(typeMetaStableV1Beta1).hash();
       const b = Installer.parse(k8s14).hash();
 
       expect(a).to.match(/[0-9a-f]{7}/);
       expect(b).to.match(/[0-9a-f]{7}/);
     });
+
+    it("hashes old versions to equivalent migrated version", () => {
+      const parsedV1Beta1 = Installer.parse(typeMetaStableV1Beta1);
+    });
   });
 
   describe("toYAML", () => {
-    it("returns standardized yaml", () => {
-      const a = Installer.parse(typeMetaStable).toYAML();
-      const b = Installer.parse(stable).toYAML();
-      const c = Installer.parse(noName).toYAML();
-      const d = Installer.parse(disordered).toYAML();
-      const e = Installer.parse(empty).toYAML();
+    describe("v1beta1", () => {
+      it("leaves missing names empty", () => {
+        const parsed = Installer.parse(noName);
+        const yaml = parsed.toYAML();
 
-      expect(a).to.equal(`apiVersion: kurl.sh/v1beta1
+        expect(yaml).to.equal(`apiVersion: cluster.kurl.sh/v1beta1
 kind: Installer
 metadata:
-  name: "stable"
+  name: ''
 spec:
   kubernetes:
-    version: "1.15.2"
+    version: 1.15.2
   weave:
-    version: "2.5.2"
+    version: 2.5.2
   rook:
-    version: "1.0.4"
+    version: 1.0.4
   contour:
-    version: "0.14.0"
+    version: 0.14.0
   registry:
-    version: "2.7.1"
-  kotsadm:
-    version: ""
-    applicationSlug: ""
+    version: 2.7.1
+  prometheus:
+    version: 0.33.0
 `);
-      expect(b).to.equal(a);
+      });
 
-      expect(c).to.equal(`apiVersion: kurl.sh/v1beta1
+      it("renders empty yaml", () => {
+        const parsed = Installer.parse(empty);
+        const yaml = parsed.toYAML();
+
+        expect(yaml).to.equal(`apiVersion: cluster.kurl.sh/v1beta1
 kind: Installer
 metadata:
-  name: ""
+  name: ''
 spec:
   kubernetes:
-    version: "1.15.2"
-  weave:
-    version: "2.5.2"
-  rook:
-    version: "1.0.4"
-  contour:
-    version: "0.14.0"
-  registry:
-    version: "2.7.1"
-  kotsadm:
-    version: ""
-    applicationSlug: ""
+    version: ''
 `);
-      expect(d).to.equal(c);
-
-      expect(e).to.equal(`apiVersion: kurl.sh/v1beta1
-kind: Installer
-metadata:
-  name: ""
-spec:
-  kubernetes:
-    version: ""
-  weave:
-    version: ""
-  rook:
-    version: ""
-  contour:
-    version: ""
-  registry:
-    version: ""
-  kotsadm:
-    version: ""
-    applicationSlug: ""
-`);
+      });
     });
   });
 
@@ -292,8 +452,8 @@ spec:
       { slug: "", answer: false},
       { slug: " ", answer: false},
       { slug: "big-bank-beta", answer: true},
-      { slug: _.range(0,255).map((x) => "a").join(""), answer: true },
-      { slug: _.range(0,256).map((x) => "a").join(""), answer: false },
+      { slug: _.range(0, 255).map((x) => "a").join(""), answer: true },
+      { slug: _.range(0, 256).map((x) => "a").join(""), answer: false },
     ].forEach((test) => {
       it(`"${test.slug}" => ${test.answer}`, () => {
         const output = Installer.isValidSlug(test.slug);
@@ -303,103 +463,317 @@ spec:
     });
   });
 
-  describe("isEqual", () => {
-    describe("equal", () => {
-      it("=> true", () => {
-        const a = Installer.parse(typeMetaStable);
-        const b = Installer.parse(noName);
-        const c = Installer.parse(disordered);
+  describe("Installer.isValidCidrRange", () => {
+    [
+      { cidrRange: "/12", answer: true },
+      { cidrRange: "12", answer: true},
+      { cidrRange: " ", answer: false},
+      { cidrRange: "abc", answer: false},
+    ].forEach((test) => {
+      it(`"${test.cidrRange}" => ${test.answer}`, () => {
+        const output = Installer.isValidCidrRange(test.cidrRange);
 
-        expect(a.specIsEqual(a)).to.equal(true);
-        expect(a.specIsEqual(b)).to.equal(true);
-        expect(a.specIsEqual(c)).to.equal(true);
-        expect(b.specIsEqual(a)).to.equal(true);
-        expect(b.specIsEqual(b)).to.equal(true);
-        expect(b.specIsEqual(c)).to.equal(true);
-        expect(c.specIsEqual(a)).to.equal(true);
-        expect(c.specIsEqual(b)).to.equal(true);
-        expect(c.specIsEqual(c)).to.equal(true);
-      });
-    });
-
-    describe("inequal", () => {
-      it("=> false", () => {
-        const a = Installer.parse(typeMetaStable);
-        const b = Installer.parse(k8s14);
-
-        expect(a.specIsEqual(b)).to.equal(false);
-        expect(b.specIsEqual(a)).to.equal(false);
+        expect(Installer.isValidCidrRange(test.cidrRange)).to.equal(test.answer);
       });
     });
   });
 
   describe("validate", () => {
     describe("valid", () => {
-      it("=> void", async () => {
+      it("=> void", () => {
         [
-          typeMetaStable,
+          typeMetaStableV1Beta1,
         ].forEach(async (yaml) => {
-          const out = await Installer.parse(yaml).validate();
-          
-          expect(out).to.be.undefined;
+          const out = Installer.parse(yaml).validate();
+
+          expect(out).to.equal(undefined);
         });
       });
 
       describe("application slug exists", () => {
-        it("=> void", async () => {
-          const out = await Installer.parse(kots).validate();
+        it("=> void", () => {
+          const out = Installer.parse(kots).validate();
 
-          expect(out).to.be.undefined;
+          expect(out).to.equal(undefined);
+        });
+      });
+
+      describe("every option", () => {
+        it("=> void", () => {
+          const out = Installer.parse(everyOption).validate();
+
+          expect(out).to.equal(undefined);
         });
       });
     });
 
-    describe("invalid", () => {
-      it("=> ErrorResponse", async () => {
+    describe("invalid Kubernetes versions", () => {
+      it("=> ErrorResponse", () => {
         const noK8s = `
 spec:
   kubernetes:
     version: ""
-`
-        const noK8sOut = await Installer.parse(noK8s).validate();
+`;
+        const noK8sOut = Installer.parse(noK8s).validate();
         expect(noK8sOut).to.deep.equal({ error: { message: "Kubernetes version is required" } });
 
         const badK8s = `
 spec:
   kubernetes:
     version: "0.15.3"
-`
-        const badK8sOut = await Installer.parse(badK8s).validate();
+`;
+        const badK8sOut = Installer.parse(badK8s).validate();
         expect(badK8sOut).to.deep.equal({ error: { message: "Kubernetes version 0.15.3 is not supported" } });
       });
     });
 
+    describe("invalid Prometheus version", () => {
+      it("=> ErrorResponse", () => {
+        const yaml = `
+spec:
+  kubernetes:
+    version: latest
+  prometheus:
+    version: 0.32.0
+`;
+        const out = Installer.parse(yaml).validate();
+
+        expect(out).to.deep.equal({ error: { message: `Prometheus version "0.32.0" is not supported` } });
+      });
+    });
+
     describe("kots version missing", () => {
-      it("=> ErrorResponse", async () => {
-        const out = await Installer.parse(kotsNoVersion).validate();
+      it("=> ErrorResponse", () => {
+        const out = Installer.parse(kotsNoVersion).validate();
 
-        expect(out).to.deep.equal({ error: { message: "Kotsadm version is required when application slug is set" }});
+        expect(out).to.deep.equal({ error: { message: "spec.kotsadm should have required property 'version'" }});
       });
     });
 
-    describe("kots application slug missing", () => {
-      it("=> ErrorResponse", async () => {
-        const out = await Installer.parse(kotsNoSlug).validate();
+    describe("docker version is a boolean", () => {
+      const yaml = `
+spec:
+  kubernetes:
+    version: latest
+  docker:
+    version: true`;
+      const i = Installer.parse(yaml);
+      const out = i.validate();
 
-        expect(out).to.deep.equal({ error: { message: "Kotsadm application slug is required when version is set" }});
-      });
+      expect(out).to.deep.equal({ error: { message: "spec.docker.version should be string" } });
     });
 
-    describe("kots application does not exist", () => {
-      it("=> ErrorResponse", async () => {
-        const parsed = Installer.parse(kots);
+    describe("invalid podCidrRange", () => {
+      const yaml = `
+spec:
+  kubernetes:
+    version: latest
+  weave:
+    version: latest
+    podCidrRange: abc`;
+      const i = Installer.parse(yaml);
+      const out = i.validate();
 
-        parsed.kotsadm.applicationSlug = "this-app-does-not-exist";
+      expect(out).to.deep.equal({ error: { message: "Weave podCidrRange \"abc\" is invalid" } });
+    });
 
-        const out = await parsed.validate();
+    describe("invalid serviceCidrRange", () => {
+      const yaml = `
+spec:
+  kubernetes:
+    version: latest
+    serviceCidrRange: abc`;
+      const i = Installer.parse(yaml);
+      const out = i.validate();
 
-        expect(out).to.deep.equal({ error: { message: "Kotsadm application 'this-app-does-not-exist' not found" }});
+      expect(out).to.deep.equal({ error: { message: "Kubernetes serviceCidrRange \"abc\" is invalid" } });
+    });
+
+    describe("extra options", () => {
+      it("=> ErrorResponse", () => {
+        const yaml = `
+spec:
+  kubernetes:
+    version: latest
+    seLinux: true`;
+        const i = Installer.parse(yaml);
+        const out = i.validate();
+
+        expect(out).to.deep.equal({ error: { message: "spec.kubernetes should NOT have additional properties" } });
       });
+    });
+  });
+
+  describe("flags", () => {
+    describe("every option", () => {
+      it(`=> service-cidr-range=/12 ...`, () => {
+        const i = Installer.parse(everyOption);
+
+          expect(i.flags()).to.equal("service-cidr-range=/12 service-cidr=100.1.1.1/12 ha=0 kuberenetes-master-address=192.168.1.1 load-balancer-address=10.128.10.1 bootstrap-token=token bootstrap-token-ttl=10min kubeadm-token-ca-hash=hash control-plane=0 cert-key=key bypass-storagedriver-warnings=0 hard-fail-on-loopback=0 no-ce-on-ee=0 docker-registry-ip=192.168.0.1 additional-no-proxy=129.168.0.2 no-docker=0 pod-cidr=39.1.2.3 pod-cidr-range=/12 disable-weave-encryption=0 storage-class-name=default ceph-replica-count=1 rook-block-storage-enabled=1 rook-block-device-filter=sd[a-z] openebs-namespace=openebs openebs-localpv-enabled=1 openebs-localpv-storage-class-name=default openebs-cstor-enabled=1 openebs-cstor-storage-class-name=cstor minio-namespace=minio contour-tls-minimum-protocol-version=1.3 registry-publish-port=20 fluentd-full-efk-stack=0 kotsadm-application-slug=sentry kotsadm-ui-bind-port=8800 kotsadm-hostname=1.1.1.1 kotsadm-application-namespaces=kots velero-namespace=velero velero-local-bucket=local velero-disable-cli=0 velero-disable-restic=0 ekco-node-unreachable-toleration-duration=10m ekco-min-ready-master-node-count=3 ekco-min-ready-worker-node-count=1 ekco-should-disable-reboot-service=0 ekco-rook-should-use-all-nodes=0 http-proxy=1.1.1.1 airgap=0 bypass-firewalld-warning=0 hard-fail-on-firewalld=0 hostname-check=2.2.2.2 no-proxy=0 private-address=10.38.1.1 public-address=101.38.1.1");
+      });
+    });
+  });
+
+  describe("velero", () => {
+    it("should parse", () => {
+      const i = Installer.parse(velero);
+
+      expect(i.spec.velero).to.deep.equal({
+        version: "latest",
+        namespace: "not-velero",
+        installCLI: false,
+        useRestic: false,
+      });
+    });
+  });
+
+  describe("velero minimum spec flags", () => {
+    it("should not generate any flags", () => {
+      const i = Installer.parse(veleroMin);
+
+      expect(i.flags()).to.equal(``);
+    });
+  });
+
+  describe("velero defaults", () => {
+    it("should generate only the velero-namespace flag", () => {
+      const i = Installer.parse(veleroDefaults);
+
+      expect(i.flags()).to.equal(`velero-namespace=velero`);
+    });
+  });
+
+  describe("fluentd", () => {
+    it("should parse", () => {
+      const i = Installer.parse(fluentd);
+
+      expect(i.spec.fluentd).to.deep.equal({
+        version: "latest",
+        fullEFKStack: true,
+      });
+    });
+  });
+
+  describe("fluentd minimum spec flags", () => {
+    it("should not generate any flags", () => {
+      const i = Installer.parse(fluentdMin);
+
+      expect(i.flags()).to.equal(``);
+    });
+  });
+
+  describe("openebs", () => {
+    it("should parse", () => {
+      const i = Installer.parse(everyOption);
+
+      expect(i.spec.openebs.namespace).to.equal("openebs");
+    });
+  });
+
+  describe("ekco", () => {
+    it("should parse", () => {
+      const i = Installer.parse(ekco);
+
+      expect(i.spec.ekco).to.deep.equal({
+        version: "latest",
+        nodeUnreachableToleration: "10m",
+        minReadyMasterNodeCount: 3,
+        minReadyWorkerNodeCount: 1,
+        shouldDisableRebootService: false,
+        shouldDisableClearNodes: false,
+        shouldEnablePurgeNodes: false,
+        rookShouldUseAllNodes: false,
+      });
+        expect(i.flags()).to.equal("ekco-node-unreachable-toleration-duration=10m ekco-min-ready-master-node-count=3 ekco-min-ready-worker-node-count=1 ekco-should-disable-reboot-service=0 ekco-rook-should-use-all-nodes=0")
+    });
+  });
+
+  describe("contour", () => {
+    it("should parse", () => {
+      const i = Installer.parse(contour);
+
+      expect(i.spec.contour).to.deep.equal({
+        version: "latest",
+        tlsMinimumProtocolVersion: "1.3",
+      });
+        expect(i.flags()).to.equal("contour-tls-minimum-protocol-version=1.3")
+    });
+  });
+
+  describe("ekco minimum spec flags", () => {
+    it("should not generate any flags", () => {
+      const i = Installer.parse(ekcoMin);
+
+      expect(i.flags()).to.equal(``);
+    });
+  });
+
+  describe("openebs", () => {
+    it("should parse", () => {
+      const i = Installer.parse(openebs);
+
+      expect(i.spec.openebs).to.deep.equal({
+        version: "latest",
+        isLocalPVEnabled: true,
+        localPVStorageClassName: "default",
+        isCstorEnabled: true,
+        cstorStorageClassName: "cstor",
+      });
+    });
+  });
+
+  describe("latestMinors", () => {
+    it("should include lateset version indexed by minor", () => {
+      const out = Installer.latestMinors();
+
+      expect(out[0]).to.equal("0.0.0");
+      expect(out[14]).to.equal("0.0.0");
+      expect(out[15]).to.equal("1.15.3");
+      expect(out[16]).to.equal("1.16.4");
+      expect(out[17]).to.equal("1.17.13");
+      expect(out[18]).to.equal("1.18.10");
+      expect(out[19]).to.equal("1.19.3");
+    });
+  });
+
+  describe("collectd", () => {
+    it("should parse", () => {
+      const i = Installer.parse(everyOption);
+
+      expect(i.spec.collectd.version).to.equal("0.0.1");
+    });
+  });
+
+  describe("certManager", () => {
+    it("should parse the version", () => {
+      const i = Installer.parse(everyOption);
+
+      expect(i.spec.certManager.version).to.equal("1.0.3");
+    });
+  });
+
+  describe("metricsServer", () => {
+    it("should parse the version", () => {
+      const i = Installer.parse(everyOption);
+
+      expect(i.spec.metricsServer.version).to.equal("0.3.7");
+    });
+  });
+
+  describe("packages", () => {
+    it("should convert camel case to kebab case", () => {
+      const i = Installer.parse(everyOption).resolve();
+      const pkgs = i.packages();
+
+      const hasCertManager = _.some(pkgs, (pkg) => {
+        return _.startsWith(pkg, "cert-manager");
+      });
+      const hasMetricsServer = _.some(pkgs, (pkg) => {
+        return _.startsWith(pkg, "metrics-server");
+      });
+
+      expect(hasCertManager).to.equal(true);
+      expect(hasMetricsServer).to.equal(true);
     });
   });
 });

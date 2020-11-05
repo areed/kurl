@@ -1,0 +1,54 @@
+name: debug-github-release
+
+on:
+  push:
+    tags:
+    - "debug*"
+
+jobs:
+  debug-github-release:
+    runs-on: ubuntu-18.04
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+
+    - name: Get the version
+      id: get_tag
+      shell: bash
+      run: echo ::set-output name=GIT_TAG::${GITHUB_REF/refs\/tags\//}
+
+    - name: Generate Changelog
+      run: |
+        lastTag=$(git describe --abbrev=0 --tags "$(git rev-list --tags --skip=1 --max-count=1)")
+        docker run --rm \
+          --env CHANGELOG_GITHUB_TOKEN \
+          -v `pwd`:/usr/local/src/your-app \
+          ferrarimarco/github-changelog-generator \
+          --user=replicatedhq \
+          --project=kurl \
+          --release-branch=master \
+          --since-tag="$lastTag" \
+          --no-issues \
+          --no-author
+        sed -i '/This Changelog was automatically generated/d' ./CHANGELOG.md
+      env:
+        CHANGELOG_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GIT_TAG: ${{ steps.get_tag.outputs.GIT_TAG }}
+
+    - name: Read Changelog
+      id: read-changelog
+      uses: juliangruber/read-file-action@v1
+      with:
+        path: ./CHANGELOG.md
+
+    - name: GitHub Release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GIT_TAG: ${{ steps.get_tag.outputs.GIT_TAG }}
+      with:
+        tag_name: ${{ env.GIT_TAG }}
+        release_name: Release ${{ env.GIT_TAG }}
+        body: ${{ steps.read-changelog.outputs.content }}
+        draft: true
+        prerelease: false

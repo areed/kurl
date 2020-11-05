@@ -1,18 +1,26 @@
 
 function discover() {
+    local fullCluster="$1"
+
     detectLsbDist
-    discoverCurrentKubernetesVersion
+    discoverCurrentKubernetesVersion "$fullCluster"
 
     # never upgrade docker underneath kubernetes
-    if commandExists docker ; then
+    if docker version >/dev/null 2>&1 ; then
         SKIP_DOCKER_INSTALL=1
+        echo "Docker already exists on this machine so no docker install will be performed"
     fi
 
-    if [ "$NO_PROXY" != "1" ] && [ -z "$PROXY_ADDRESS" ]; then
-        discoverProxy
+    if ctr --version >/dev/null 2>&1 ; then
+        SKIP_CONTAINERD_INSTALL=1
+        echo "Containerd already exists on this machine so no containerd install will be performed"
     fi
 
-    discoverPublicIp
+    discover_public_ip
+    discover_private_ip
+
+    KERNEL_MAJOR=$(uname -r | cut -d'.' -f1)
+    KERNEL_MINOR=$(uname -r | cut -d'.' -f2)
 }
  
 LSB_DIST=
@@ -110,85 +118,160 @@ detectLsbDist() {
     fi
 }
 
+KUBERNETES_STEP_LOCAL_PRIMARY=0
+KUBERNETES_UPGRADE_LOCAL_PRIMARY_MINOR=0
+KUBERNETES_UPGRADE_LOCAL_PRIMARY_PATCH=0
+
+KUBERNETES_STEP_REMOTE_PRIMARIES=0
+KUBERNETES_UPGRADE_REMOTE_PRIMARIES_MINOR=0
+KUBERNETES_UPGRADE_REMOTE_PRIMARIES_PATCH=0
+
+KUBERNETES_STEP_SECONDARIES=0
+KUBERNETES_UPGRADE_SECONDARIES_MINOR=0
+KUBERNETES_UPGRADE_SECONDARIES_PATCH=0
+
 discoverCurrentKubernetesVersion() {
+    local fullCluster="$1"
+
     set +e
     CURRENT_KUBERNETES_VERSION=$(cat /etc/kubernetes/manifests/kube-apiserver.yaml 2>/dev/null | grep image: | grep -oE '[0-9]+.[0-9]+.[0-9]')
     set -e
 
-    if [ -n "$CURRENT_KUBERNETES_VERSION" ]; then
-        semverParse $CURRENT_KUBERNETES_VERSION
-        KUBERNETES_CURRENT_VERSION_MAJOR="$major"
-        KUBERNETES_CURRENT_VERSION_MINOR="$minor"
-        KUBERNETES_CURRENT_VERSION_PATCH="$patch"
-
-        semverParse "$KUBERNETES_VERSION"
-        if [ "$KUBERNETES_CURRENT_VERSION_MINOR" -lt "$minor" ]; then
-            KUBERNETES_UPGRADE=1
-            KUBERNETES_UPGRADE_LOCAL_MASTER_MINOR=1
-        elif [ "$KUBERNETES_CURRENT_VERSION_PATCH" -lt "$patch" ]; then
-            KUBERNETES_UPGRADE=1
-            KUBERNETES_UPGRADE_LOCAL_MASTER_PATCH=1
-        fi
-
-        if kubernetes_any_remote_master_unupgraded; then
-            KUBERNETES_UPGRADE=1
-            KUBERNETES_UPGRADE_REMOTE_MASTERS_PATCH=1
-        fi
-
-        if kubernetes_any_worker_unupgraded; then
-            KUBERNETES_UPGRADE=1
-            KUBERNETES_UPGRADE_WORKERS_PATCH=1
-        fi
+    if [ -z "$CURRENT_KUBERNETES_VERSION" ]; then
+        # This is a new install and no upgrades are required
+        return 0
     fi
 
-    local _ifs="$IFS"
+    # These versions are for the local primary
+    semverParse $CURRENT_KUBERNETES_VERSION
+    KUBERNETES_CURRENT_VERSION_MAJOR="$major"
+    KUBERNETES_CURRENT_VERSION_MINOR="$minor"
+    KUBERNETES_CURRENT_VERSION_PATCH="$patch"
+
+    if [ -z "$fullCluster" ]; then
+        return 0
+    fi
+
+    # Populate arrays with versions of remote nodes
+    kubernetes_get_remote_primaries
+    kubernetes_get_secondaries
+
+    # If any nodes have a lower minor than this then we'll need to do an extra step upgrade
+    STEP_VERSION_MINOR=$(($KUBERNETES_TARGET_VERSION_MINOR - 1))
+
+    # These will be used in preflight checks
+    LOWEST_SUPPORTED_MINOR=$(($STEP_VERSION_MINOR - 1))
+    MIN_CLUSTER_NODE_MINOR_FOUND=$KUBERNETES_CURRENT_VERSION_MINOR
+    MAX_CLUSTER_NODE_MINOR_FOUND=$KUBERNETES_CURRENT_VERSION_MINOR
+
+    # Check if minor, step, or patch upgrades are needed for the local primary
+    if [ $KUBERNETES_CURRENT_VERSION_MINOR -lt $STEP_VERSION_MINOR ]; then
+        KUBERNETES_STEP_LOCAL_PRIMARY=1
+        KUBERNETES_UPGRADE_LOCAL_PRIMARY_MINOR=1
+        KUBERNETES_UPGRADE=1
+    elif [ $KUBERNETES_CURRENT_VERSION_MINOR -lt $KUBERNETES_TARGET_VERSION_MINOR ]; then
+        KUBERNETES_UPGRADE_LOCAL_PRIMARY_MINOR=1
+        KUBERNETES_UPGRADE=1
+    elif [ $KUBERNETES_CURRENT_VERSION_PATCH -lt $KUBERNETES_TARGET_VERSION_PATCH ]; then
+        KUBERNETES_UPGRADE_LOCAL_PRIMARY_PATCH=1
+        KUBERNETES_UPGRADE=1
+    fi
+
+    # Check for upgrades required on remote primaries
+    for i in ${!KUBERNETES_REMOTE_PRIMARIES[@]}; do
+        semverParse ${KUBERNETES_REMOTE_PRIMARY_VERSIONS[$i]}
+
+        # Adjust min and max minor vars for preflights
+        if [ $minor -lt $MIN_CLUSTER_NODE_MINOR_FOUND ]; then
+            MIN_CLUSTER_NODE_MINOR_FOUND=$minor
+        fi
+        if [ $minor -gt $MAX_CLUSTER_NODE_MINOR_FOUND ]; then
+            MAX_CLUSTER_NODE_MINOR_FOUND=$minor
+        fi
+
+        # Check step, minor, and patch for this remote primary
+        if [ $minor -lt $STEP_VERSION_MINOR ]; then
+            KUBERNETES_STEP_REMOTE_PRIMARIES=1
+            KUBERNETES_UPGRADE_REMOTE_PRIMARIES_MINOR=1
+            KUBERNETES_UPGRADE=1
+        elif [ $minor -lt $KUBERNETES_TARGET_VERSION_MINOR ]; then
+            KUBERNETES_UPGRADE_REMOTE_PRIMARIES_MINOR=1
+            KUBERNETES_UPGRADE=1
+        elif [ $patch -lt $KUBERNETES_TARGET_VERSION_PATCH ]; then
+            KUBERNETES_UPGRADE_REMOTE_PRIMARIES_PATCH=1
+            KUBERNETES_UPGRADE=1
+        fi
+    done
+
+    # Check for upgrades required on remote secondaries
+    for i in ${!KUBERNETES_SECONDARIES[@]}; do
+        semverParse ${KUBERNETES_SECONDARY_VERSIONS[$i]}
+
+        # Adjust min and max minor vars for preflights
+        if [ $minor -lt $MIN_CLUSTER_NODE_MINOR_FOUND ]; then
+            MIN_CLUSTER_NODE_MINOR_FOUND=$minor
+        fi
+        if [ $minor -gt $MAX_CLUSTER_NODE_MINOR_FOUND ]; then
+            MAX_CLUSTER_NODE_MINOR_FOUND=$minor
+        fi
+
+        # Check step, minor, and patch for this secondary
+        if [ $minor -lt $STEP_VERSION_MINOR ]; then
+            KUBERNETES_STEP_SECONDARIES=1
+            KUBERNETES_UPGRADE_SECONDARIES_MINOR=1
+            KUBERNETES_UPGRADE=1
+        elif [ $minor -lt $KUBERNETES_TARGET_VERSION_MINOR ]; then
+            KUBERNETES_UPGRADE_SECONDARIES_MINOR=1
+            KUBERNETES_UPGRADE=1
+        elif [ $patch -lt $KUBERNETES_TARGET_VERSION_PATCH ]; then
+            KUBERNETES_UPGRADE_SECONDARIES_PATCH=1
+            KUBERNETES_UPGRADE=1
+        fi
+    done
+
+    # preflights
+    if [ $MAX_CLUSTER_NODE_MINOR_FOUND -gt $KUBERNETES_TARGET_VERSION_MINOR ]; then
+        printf "%s %s %s" \
+            "The currently installed kubernetes version is 1.${MAX_CLUSTER_NODE_MINOR_FOUND}." \
+            "The requested version to upgrade to is ${KUBERNETES_VERSION}." \
+            "Since the currently installed version is newer than the requested version, no action will be taken."
+        bail
+    fi
+    if [ $MIN_CLUSTER_NODE_MINOR_FOUND -lt $LOWEST_SUPPORTED_MINOR ]; then
+        MAX_UPGRADEABLE_VERSION_MINOR=$(($MIN_CLUSTER_NODE_MINOR_FOUND + 2))
+        printf "%s %s %s" \
+            "The currently installed kubernetes version is ${CURRENT_KUBERNETES_VERSION}." \
+            "The requested version to upgrade to is ${KUBERNETES_VERSION}." \
+            "Kurl can only be upgraded two minor versions at time. Please install ${KUBERNETES_TARGET_VERSION_MAJOR}.${MAX_UPGRADEABLE_VERSION_MINOR}.x. first."
+        bail
+    fi
+
+    if [ "$KUBERNETES_STEP_LOCAL_PRIMARY" == "1" ] || [ "$KUBERNETES_STEP_REMOTE_PRIMARIES" == "1" ] || [ "$KUBERNETES_STEP_SECONDARIES" == 1 ]; then
+        STEP_VERSION=${STEP_VERSIONS[$STEP_VERSION_MINOR]}
+    fi
 }
 
 getDockerVersion() {
-	if ! commandExists "docker"; then
+	if ! commandExists "docker" ; then
 		return
 	fi
 	DOCKER_VERSION=$(docker -v | awk '{gsub(/,/, "", $3); print $3}')
 }
 
-discoverProxy() {
-    if [ -n "$REPLICATED_CONF_VALUE" ]; then
-        PROXY_ADDRESS="$REPLICATED_CONF_VALUE"
-        printf "The installer will use the proxy at '%s' (imported from /etc/replicated.conf 'HttpProxy')\n" "$PROXY_ADDRESS"
+discover_public_ip() {
+    if [ "$AIRGAP" == "1" ]; then
         return
     fi
 
-    if [ -n "$HTTP_PROXY" ]; then
-        PROXY_ADDRESS="$HTTP_PROXY"
-        printf "The installer will use the proxy at '%s' (imported from env var 'HTTP_PROXY')\n" "$PROXY_ADDRESS"
-        return
-    elif [ -n "$http_proxy" ]; then
-        PROXY_ADDRESS="$http_proxy"
-        printf "The installer will use the proxy at '%s' (imported from env var 'http_proxy')\n" "$PROXY_ADDRESS"
-        return
-    elif [ -n "$HTTPS_PROXY" ]; then
-        PROXY_ADDRESS="$HTTPS_PROXY"
-        printf "The installer will use the proxy at '%s' (imported from env var 'HTTPS_PROXY')\n" "$PROXY_ADDRESS"
-        return
-    elif [ -n "$https_proxy" ]; then
-        PROXY_ADDRESS="$https_proxy"
-        printf "The installer will use the proxy at '%s' (imported from env var 'https_proxy')\n" "$PROXY_ADDRESS"
-        return
-    fi
-
-    if curl --noproxy "*" --silent --connect-timeout 2 --fail https://api.replicated.com/market/v1/echo/ip > /dev/null ; then
-        NO_PROXY=1
-    fi
-}
-
-discoverPublicIp() {
+    # gce
     set +e
     _out=$(curl --noproxy "*" --max-time 5 --connect-timeout 2 -qSfs -H 'Metadata-Flavor: Google' http://169.254.169.254/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip 2>/dev/null)
     _status=$?
     set -e
-
     if [ "$_status" -eq "0" ] && [ -n "$_out" ]; then
-        PUBLIC_ADDRESS=$_out
+        if isValidIpv4 "$_out" || isValidIpv6 "$_out"; then
+            PUBLIC_ADDRESS=$_out
+        fi
         return
     fi
 
@@ -198,7 +281,31 @@ discoverPublicIp() {
     _status=$?
     set -e
     if [ "$_status" -eq "0" ] && [ -n "$_out" ]; then
-        PUBLIC_ADDRESS=$_out
+        if isValidIpv4 "$_out" || isValidIpv6 "$_out"; then
+            PUBLIC_ADDRESS=$_out
+        fi
         return
     fi
+
+    # azure
+    set +e
+    _out=$(curl --noproxy "*" --max-time 5 --connect-timeout 2 -qSfs -H Metadata:true "http://169.254.169.254/metadata/instance/network/interface/0/ipv4/ipAddress/0/publicIpAddress?api-version=2017-08-01&format=text" 2>/dev/null)
+    _status=$?
+    set -e
+    if [ "$_status" -eq "0" ] && [ -n "$_out" ]; then
+        if isValidIpv4 "$_out" || isValidIpv6 "$_out"; then
+            PUBLIC_ADDRESS=$_out
+        fi
+        return
+    fi
+}
+
+function discover_private_ip() {
+    if [ -n "$PRIVATE_ADDRESS" ]; then
+        return 0
+    fi
+    PRIVATE_ADDRESS=$(cat /etc/kubernetes/manifests/kube-apiserver.yaml 2>/dev/null | grep advertise-address | awk -F'=' '{ print $2 }')
+
+    #This is needed on k8s 1.18.x as $PRIVATE_ADDRESS is found to have a newline
+    PRIVATE_ADDRESS=$(echo "$PRIVATE_ADDRESS" | tr -d '\n')
 }

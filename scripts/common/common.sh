@@ -12,7 +12,7 @@ KUBEADM_CONF_DIR=/opt/replicated
 KUBEADM_CONF_FILE="$KUBEADM_CONF_DIR/kubeadm.conf"
 
 commandExists() {
-	command -v "$@" > /dev/null 2>&1
+    command -v "$@" > /dev/null 2>&1
 }
 
 insertOrReplaceJsonParam() {
@@ -77,6 +77,20 @@ waitForNodes() {
             kubectl get nodes 1>/dev/null
         fi
         sleep 2
+    done
+}
+
+# Label nodes as provisioned by kurl installation
+# (these labels should have been added by kurl installation.
+#  See kubeadm-init and kubeadm-join yamk files.
+#  This bit will ensure the labels are added for pre-existing cluster
+#  during a kurl upgrade.)
+labelNodes() {
+    for NODE in $(kubectl get nodes --no-headers | awk '{print $1}');do
+        kurl_label=$(kubectl describe nodes $NODE | grep "kurl.sh\/cluster=true") || true
+        if [[ -z $kurl_label ]];then
+            kubectl label node --overwrite $NODE kurl.sh/cluster=true;
+        fi
     done
 }
 
@@ -173,7 +187,11 @@ parseDockerVersion() {
 exportKubeconfig() {
     cp /etc/kubernetes/admin.conf $HOME/admin.conf
     chown $SUDO_USER:$SUDO_GID $HOME/admin.conf
-    chmod 444 /etc/kubernetes/admin.conf
+    current_user_sudo_group
+    if [ -n "$FOUND_SUDO_GROUP" ]; then
+        chown root:$FOUND_SUDO_GROUP /etc/kubernetes/admin.conf
+    fi
+    chmod 440 /etc/kubernetes/admin.conf
     if ! grep -q "kubectl completion bash" /etc/profile; then
         echo 'export KUBECONFIG=/etc/kubernetes/admin.conf' >> /etc/profile
         echo "source <(kubectl completion bash)" >> /etc/profile
@@ -188,8 +206,23 @@ function kubernetes_resource_exists() {
     kubectl -n "$namespace" get "$kind" "$name" &>/dev/null
 }
 
+function install_cri() {
+    if [ -n "$DOCKER_VERSION" ]; then
+        install_docker
+        apply_docker_config
+    elif [ -n "$CONTAINERD_VERSION" ]; then
+        containerd_get_host_packages_online "$CONTAINERD_VERSION"
+        . $DIR/addons/containerd/$CONTAINERD_VERSION/install.sh
+        containerd_install
+    fi
+}
+
 function load_images() {
-    find "$1" -type f | xargs -I {} bash -c "docker load < {}"
+    if [ -n "$DOCKER_VERSION" ]; then
+        find "$1" -type f | xargs -I {} bash -c "docker load < {}"
+    else
+        find "$1" -type f | xargs -I {} bash -c "cat {} | gunzip | ctr -n=k8s.io images import -"
+    fi
 }
 
 # try a command every 2 seconds until it succeeds, up to 30 tries max; useful for kubectl commands
@@ -237,6 +270,119 @@ function spinner_until() {
     done
 }
 
+function get_shared() {
+    if [ "$AIRGAP" != "1" ] && [ -n "$DIST_URL" ]; then
+        curl -sSOL $DIST_URL/common.tar.gz
+        tar xf common.tar.gz
+        rm common.tar.gz
+    fi
+    if [ -f shared/kurl-util.tar ]; then
+        if [ -n "$DOCKER_VERSION" ]; then
+            docker load < shared/kurl-util.tar
+        else
+            ctr -n=k8s.io images import shared/kurl-util.tar
+        fi
+    fi
+}
+
+function all_sudo_groups() {
+    # examples of lines we're looking for in any sudo config files to find group with root privileges
+    # %wheel ALL = (ALL) ALL
+    # %google-sudoers ALL=(ALL:ALL) NOPASSWD:ALL
+    # %admin ALL=(ALL) ALL
+    cat /etc/sudoers | grep -Eo '^%\S+\s+ALL\s?=.*ALL\b' | awk '{print $1 }' | sed 's/%//'
+    find /etc/sudoers.d/ -type f | xargs cat | grep -Eo '^%\S+\s+ALL\s?=.*ALL\b' | awk '{print $1 }' | sed 's/%//'
+}
+
+# if the sudo group cannot be detected default to root
+FOUND_SUDO_GROUP=
+function current_user_sudo_group() {
+    if [ -z "$SUDO_UID" ]; then
+        return 0
+    fi
+    # return the first sudo group the current user belongs to
+    while read -r groupName; do
+        if id "$SUDO_UID" -Gn | grep -q "\b${groupName}\b"; then
+            FOUND_SUDO_GROUP="$groupName"
+            return 0
+        fi
+    done < <(all_sudo_groups)
+}
+
+function kubeconfig_setup_outro() {
+    current_user_sudo_group
+    if [ -n "$FOUND_SUDO_GROUP" ]; then
+        printf "To access the cluster with kubectl, reload your shell:\n"
+        printf "\n"
+        printf "${GREEN}    bash -l${NC}\n"
+        return
+    fi
+    local owner="$SUDO_UID"
+    if [ -z "$owner" ]; then
+        # not currently running via sudo
+        owner="$USER"
+    else
+        # running via sudo - automatically create ~/.kube/config if it does not exist
+        ownerdir=`eval echo "~$(id -un $owner)"`
+
+        if [ ! -f "$ownerdir/.kube/config" ]; then
+            mkdir -p $ownerdir/.kube
+            cp /etc/kubernetes/admin.conf $ownerdir/.kube/config
+            chown -R $owner $ownerdir/.kube
+
+            printf "To access the cluster with kubectl, ensure the KUBECONFIG environment variable is unset:\n"
+            printf "\n"
+            printf "${GREEN}    echo unset KUBECONFIG >> ~/.profile${NC}\n"
+            printf "${GREEN}    bash -l${NC}\n"
+            return
+        fi
+    fi
+
+    printf "To access the cluster with kubectl, copy kubeconfig to your home directory:\n"
+    printf "\n"
+    printf "${GREEN}    cp /etc/kubernetes/admin.conf ~/.kube/config${NC}\n"
+    printf "${GREEN}    chown -R ${owner} ~/.kube${NC}\n"
+    printf "${GREEN}    echo unset KUBECONFIG >> ~/.profile${NC}\n"
+    printf "${GREEN}    bash -l${NC}\n"
+    printf "\n"
+    printf "You will likely need to use sudo to copy and chown admin.conf.\n"
+}
+
 splitHostPort() {
     oIFS="$IFS"; IFS=":" read -r HOST PORT <<< "$1"; IFS="$oIFS"
+}
+
+isValidIpv4() {
+    if echo "$1" | grep -qs '^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$'; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+isValidIpv6() {
+    if echo "$1" | grep -qs "^\([0-9a-fA-F]\{0,4\}:\)\{1,7\}[0-9a-fA-F]\{0,4\}$"; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+function cert_has_san() {
+    local address=$1
+    local san=$2
+
+    echo "Q" | openssl s_client -connect "$address" 2>/dev/null | openssl x509 -noout -text 2>/dev/null | grep --after-context=1 'X509v3 Subject Alternative Name' | grep -q "$2"
+}
+
+# By default journald persists logs if the directory /var/log/journal exists so create it if it's
+# not found. Sysadmins may still disable persistent logging with /etc/systemd/journald.conf.
+function journald_persistent() {
+    if [ -d /var/log/journal ]; then
+        return 0
+    fi
+    mkdir -p /var/log/journal
+    systemd-tmpfiles --create --prefix /var/log/journal
+    systemctl restart systemd-journald
+    journalctl --flush
 }

@@ -10,10 +10,8 @@ import {
   Req,
   Res } from "ts-express-decorators";
 import { instrumented } from "monkit";
-import { Installer, InstallerStore } from "../installers";
+import { Installer, InstallerObject, InstallerStore } from "../installers";
 import decode from "../util/jwt";
-import { Forbidden } from "../server/errors";
-import { logger } from "../logger";
 
 interface ErrorResponse {
   error: any;
@@ -30,12 +28,6 @@ const teamWithGeneratedIDResponse = {
     message: "Name is indistinguishable from a generated ID."
   },
 }
-
-const idNameMismatchResponse = {
-  error: {
-    message: "URL path ID must match installer name in yaml if provided",
-  },
-};
 
 const slugCharactersResponse = {
   error: {
@@ -126,14 +118,13 @@ export class Installers {
     @Res() response: Express.Response,
   ): any {
     response.type("application/json");
-    return {
-      kubernetes: _.concat(["latest"], Installer.kubernetesVersions),
-      weave: _.concat(["latest"], Installer.weaveVersions),
-      rook: _.concat(["latest"], Installer.rookVersions),
-      contour: _.concat(["latest"], Installer.contourVersions),
-      registry: _.concat(["latest"], Installer.registryVersions),
-      kotsadm: _.concat(["latest"], Installer.kotsadmVersions),
-    };
+
+    const resp = _.reduce(Installer.versions, (accm, value, key) => {
+      accm[key] = _.concat(["latest"], value);
+      return accm;
+    }, {});
+
+    return resp;
   }
 
   /**
@@ -141,6 +132,7 @@ export class Installers {
    *
    * @param request
    * @param response
+   * @param id
    * @returns string
    */
   @Put("/:id")
@@ -149,60 +141,26 @@ export class Installers {
     @Req() request: Express.Request,
     @PathParams("id") id: string,
   ): Promise<string | ErrorResponse> {
-    const auth = request.header("Authorization");
-    if (!auth) {
-      response.status(401);
-      return unauthenticatedResponse;
-    }
+    return await this.doMakeInstaller(response, request, id, "");
+  }
 
-    let teamID: string;
-    try {
-      teamID = await decode(auth);
-    } catch(error) {
-      response.status(401);
-      return unauthenticatedResponse;
-    }
-
-    if (!teamID) {
-      response.status(401);
-      return unauthenticatedResponse;
-    }
-
-    if (Installer.isSHA(id)) {
-      response.status(400);
-      return teamWithGeneratedIDResponse;
-    }
-    if (!Installer.isValidSlug(id)) {
-      response.status(400);
-      return slugCharactersResponse;
-    }
-    if (Installer.slugIsReserved(id)) {
-      response.status(400);
-      return slugReservedResponse;
-    }
-
-    let i: Installer;
-    try {
-      i = Installer.parse(request.body, teamID);
-    } catch(error) {
-      response.status(400);
-      return { error };
-    }
-    if (i.id !== "" && i.id !== id) {
-      return idNameMismatchResponse;
-    }
-    i.id = id;
-    const err = await i.validate();
-    if (err) {
-      return err;
-    }
-
-    await this.installerStore.saveTeamInstaller(i);
-
-    response.contentType("text/plain");
-    response.status(201);
-    return `${this.kurlURL}/${i.id}`;
-    return "";
+  /**
+   * authenticated /installer/<id>/<slug> handler
+   *
+   * @param request
+   * @param response
+   * @param id
+   * @param slug
+   * @returns string
+   */
+  @Put("/:id/:slug")
+  public async putInstallerSlug(
+    @Res() response: Express.Response,
+    @Req() request: Express.Request,
+    @PathParams("id") id: string,
+    @PathParams("slug") slug: string,
+  ): Promise<string | ErrorResponse> {
+    return await this.doMakeInstaller(response, request, id, slug);
   }
 
   /**
@@ -218,7 +176,7 @@ export class Installers {
     @Req() request: Express.Request,
     @PathParams("id") id: string,
     @QueryParams("resolve") resolve: string,
-  ): Promise<string | ErrorResponse> {
+  ): Promise<string | InstallerObject | ErrorResponse> {
     let installer = await this.installerStore.getInstaller(id);
     if (!installer) {
       response.status(404);
@@ -231,8 +189,106 @@ export class Installers {
       installer.id = "";
     }
 
-    response.contentType("text/yaml");
     response.status(200);
+
+    if (request.accepts("application/json")) {
+      response.contentType("application/json");
+      return installer.toObject();
+    }
+
+    response.contentType("text/yaml");
     return installer.toYAML();
+  }
+
+  /**
+   * Validate installer yaml
+   *
+   * @param response
+   * @param request
+   * @returns string | ErrorResponse
+   */
+  @Post("/validate")
+  @instrumented
+  public async validateInstaller(
+    @Res() response: Express.Response,
+    @Req() request: Express.Request,
+  ): Promise<string | ErrorResponse> {
+    let i: Installer;
+    try {
+      i = Installer.parse(request.body);
+    } catch(error) {
+      response.status(400);
+      return invalidYAMLResponse;
+    }
+
+    const err = await i.validate();
+    if (err) {
+      response.status(400);
+      return err;
+    }
+
+    response.status(200);
+    return "";
+  }
+
+  async doMakeInstaller( response: Express.Response, request: Express.Request, id: string, slug: string) {
+    const auth = request.header("Authorization");
+    if (!auth) {
+      response.status(401);
+      return unauthenticatedResponse;
+    }
+  
+    let teamID: string;
+    try {
+      teamID = await decode(auth);
+    } catch(error) {
+      response.status(401);
+      return unauthenticatedResponse;
+    }
+  
+    if (!teamID) {
+      response.status(401);
+      return unauthenticatedResponse;
+    }
+  
+    if (Installer.isSHA(id)) {
+      response.status(400);
+      return teamWithGeneratedIDResponse;
+    }
+    if (!Installer.isValidSlug(id)) {
+      response.status(400);
+      return slugCharactersResponse;
+    }
+    if (Installer.slugIsReserved(id)) {
+      response.status(400);
+      return slugReservedResponse;
+    }
+  
+    let i: Installer;
+    try {
+      i = Installer.parse(request.body, teamID);
+    } catch(error) {
+      response.status(400);
+      return { error };
+    }
+    i.id = id;
+  
+    if (i.spec.kotsadm && !i.spec.kotsadm.applicationSlug) {
+      if (slug != "") {
+        i.spec.kotsadm.applicationSlug = slug
+      }
+    }
+  
+    const err = await i.validate();
+    if (err) {
+      response.status(400);
+      return err;
+    }
+  
+    await this.installerStore.saveTeamInstaller(i);
+  
+    response.contentType("text/plain");
+    response.status(201);
+    return `${this.kurlURL}/${i.id}`;
   }
 }

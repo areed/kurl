@@ -9,6 +9,8 @@ spec:
       nodeSelector:
         replicated/node-pool: privileged
       containers:
+      - name: server
+        image: 799720048698.dkr.ecr.us-east-1.amazonaws.com/kurl
       - name: kurl
         image: 799720048698.dkr.ecr.us-east-1.amazonaws.com/kurl
         env:
@@ -24,3 +26,5 @@ spec:
           value: kurl-sh
         - name: NODE_ENV
           value: production
+        - name: KURL_UTIL_IMAGE
+          value: replicated/kurl-util:__VERSION_TAG__

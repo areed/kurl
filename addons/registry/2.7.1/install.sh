@@ -1,11 +1,25 @@
 
 function registry() {
     cp "$DIR/addons/registry/2.7.1/kustomization.yaml" "$DIR/kustomize/registry/kustomization.yaml"
-    cp "$DIR/addons/registry/2.7.1/namespace.yaml" "$DIR/kustomize/registry/namespace.yaml"
-    cp "$DIR/addons/registry/2.7.1/deployment-pvc.yaml" "$DIR/kustomize/registry/deployment-pvc.yaml"
     cp "$DIR/addons/registry/2.7.1/service.yaml" "$DIR/kustomize/registry/service.yaml"
 
     registry_session_secret
+
+    # Only create registry deployment with object store if rook or minio exists and the registry pvc
+    # doesn't already exist.
+    if ! registry_pvc_exists && object_store_exists; then
+        registry_object_store_bucket
+        render_yaml_file "$DIR/addons/registry/2.7.1/tmpl-deployment-objectstore.yaml" > "$DIR/kustomize/registry/deployment-objectstore.yaml"
+        insert_resources "$DIR/kustomize/registry/kustomization.yaml" deployment-objectstore.yaml
+    else
+        cp "$DIR/addons/registry/2.7.1/deployment-pvc.yaml" "$DIR/kustomize/registry/deployment-pvc.yaml"
+        insert_resources "$DIR/kustomize/registry/kustomization.yaml" deployment-pvc.yaml
+    fi
+
+    if [ -n "$REGISTRY_PUBLISH_PORT" ]; then
+        render_yaml_file "$DIR/addons/registry/2.7.1/tmpl-node-port.yaml" > "$DIR/kustomize/registry/node-port.yaml" 
+        insert_patches_strategic_merge "$DIR/kustomize/registry/kustomization.yaml" node-port.yaml
+    fi
 
     kubectl apply -k "$DIR/kustomize/registry"
 
@@ -47,9 +61,8 @@ function registry_cred_secrets() {
     local password=$(< /dev/urandom tr -dc A-Za-z0-9 | head -c9)
 
     # if the registry pod is already running it will pick up changes to the secret without restart
-    docker run --rm \
-        --entrypoint htpasswd \
-        registry:2.7.1 -Bbn "$user" "$password" > htpasswd
+    BIN_HTPASSWD=./bin/htpasswd
+    $BIN_HTPASSWD -u "$user" -p "$password" -f htpasswd
     kubectl -n kurl create secret generic registry-htpasswd --from-file=htpasswd
     rm htpasswd
 
@@ -64,8 +77,10 @@ function registry_docker_ca() {
         bail "Docker registry address required"
     fi
 
-    mkdir -p /etc/docker/certs.d/$DOCKER_REGISTRY_IP
-    ln -s --force /etc/kubernetes/pki/ca.crt /etc/docker/certs.d/$DOCKER_REGISTRY_IP/ca.crt
+    if [ -n "$DOCKER_VERSION" ]; then
+        mkdir -p /etc/docker/certs.d/$DOCKER_REGISTRY_IP
+        ln -s --force /etc/kubernetes/pki/ca.crt /etc/docker/certs.d/$DOCKER_REGISTRY_IP/ca.crt
+    fi
 }
 
 function registry_pki_secret() {
@@ -92,6 +107,13 @@ CN = registry.kurl.svc.cluster.local
 [ req_ext ]
 subjectAltName = @alt_names
 
+[ v3_ext ]
+authorityKeyIdentifier=keyid,issuer:always
+basicConstraints=CA:FALSE
+keyUsage=nonRepudiation,digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+subjectAltName=@alt_names
+
 [ alt_names ]
 DNS.1 = registry
 DNS.2 = registry.kurl
@@ -99,14 +121,15 @@ DNS.3 = registry.kurl.svc
 DNS.4 = registry.kurl.svc.cluster
 DNS.5 = registry.kurl.svc.cluster.local
 IP.1 = $DOCKER_REGISTRY_IP
-
-[ v3_ext ]
-authorityKeyIdentifier=keyid,issuer:always
-basicConstraints=CA:FALSE
-keyUsage=keyEncipherment,dataEncipherment
-extendedKeyUsage=serverAuth
-subjectAltName=@alt_names
 EOF
+
+    if [ -n "$REGISTRY_PUBLISH_PORT" ]; then
+        echo "IP.2 = $PRIVATE_ADDRESS" >> registry.cnf
+
+        if [ -n "$PUBLIC_ADDRESS" ]; then
+            echo "IP.3 = $PUBLIC_ADDRESS" >> registry.cnf
+        fi
+    fi
 
     openssl req -newkey rsa:2048 -nodes -keyout registry.key -out registry.csr -config registry.cnf
     openssl x509 -req -days 365 -in registry.csr -CA /etc/kubernetes/pki/ca.crt -CAkey /etc/kubernetes/pki/ca.key -CAcreateserial -out registry.crt -extensions v3_ext -extfile registry.cnf
@@ -118,4 +141,12 @@ EOF
 
     popd
     rm -r "$tmp"
+}
+
+function registry_object_store_bucket() {
+    object_store_create_bucket "docker-registry"
+}
+
+function registry_pvc_exists() {
+    kubectl -n kurl get pvc registry-pvc &>/dev/null
 }
